@@ -369,7 +369,8 @@ public abstract class BaseSourceTask<P extends Partition, O extends OffsetContex
     protected abstract ChangeEventSourceCoordinator<P, O> start(Configuration config);
 
     protected abstract String connectorName();
-    // 连接器任务最核心的执行逻辑，负责协调启动检查、位点提交、数据拉取、统计记录以及错误处理。
+    // 连接器任务最核心的执行逻辑，
+    // 负责协调启动检查、位点提交、数据拉取、统计记录以及错误处理。
     @Override
     public final List<SourceRecord> poll() throws InterruptedException {
 
@@ -677,6 +678,7 @@ public abstract class BaseSourceTask<P extends Partition, O extends OffsetContex
      *
      * @param newState
      */
+    // 状态原子切换
     private void setTaskState(DebeziumTaskState newState) {
         DebeziumTaskState oldState = state.getAndSet(newState);
         LOGGER.debug("Setting task state to '{}', previous state was '{}'", newState, oldState);

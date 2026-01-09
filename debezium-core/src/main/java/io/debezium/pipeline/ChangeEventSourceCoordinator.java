@@ -160,7 +160,7 @@ public class ChangeEventSourceCoordinator<P extends Partition, O extends OffsetC
 
                     context = new ChangeEventSourceContextImpl();
                     LOGGER.info("Context created");
-                    // // 10. 如果数据库架构支持历史记录（如 MySQL）且历史记录文件/Topic 已存在
+                    //  10. 如果数据库架构支持历史记录（如 MySQL）且历史记录文件/Topic 已存在
                     if (schema.isHistorized() && ((HistorizedDatabaseSchema) schema).getSchemaHistory().exists()) {
                         // 11. 从上一次保存的位点（previousOffsets）恢复表结构模型
                         // 这能确保 Debezium 知道旧的 Binlog 对应的是什么样的表结构
