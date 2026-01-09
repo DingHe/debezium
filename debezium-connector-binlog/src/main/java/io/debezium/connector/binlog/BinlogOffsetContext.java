@@ -30,24 +30,41 @@ import io.debezium.util.Strings;
  *
  * @author Chris Cranford
  */
-public class BinlogOffsetContext<T extends BinlogSourceInfo> extends CommonOffsetContext<T> {
+// 在 MySQL CDC 场景中，仅记录文件名和位置是不够的。该类的主要作用包括：
+// 多维度位点追踪：同时支持 GTID（全局事务 ID）模式和 文件名+偏移量（File & Pos） 模式。
+// 事务粒度恢复：追踪记录在事务内的位置。如果连接器在事务中间崩溃，它可以精确地跳过已处理的事件（restartEventsToSkip）或行（restartRowsToSkip）。
+// 状态持久化：将内存中的 binlog 坐标转换为 Kafka Connect 要求的 Map 格式，用于写入 Kafka 的内部 offset topic。
 
+public class BinlogOffsetContext<T extends BinlogSourceInfo> extends CommonOffsetContext<T> {
+    // 存储在 Offset 中，记录重启后需要跳过的事件数量。
     public static final String EVENTS_TO_SKIP_OFFSET_KEY = "event";
+    // 事件在数据库发生的秒级时间戳
     public static final String TIMESTAMP_KEY = "ts_sec";
+    // 存储已处理完成的 GTID 集合字符串
     public static final String GTID_SET_KEY = "gtids";
+    // 用于在非 GTID 模式下生成模拟事务 ID。
     public static final String NON_GTID_TRANSACTION_ID_FORMAT = "file=%s,pos=%s";
 
     private final Schema sourceInfoSchema;
+    // 存储 Debezium 特有的事务元数据（如事务内事件计数）
     private final TransactionContext transactionContext;
+    // 管理增量快照的状态（如当前扫描到的主键位置）
     private final IncrementalSnapshotContext<TableId> incrementalSnapshotContext;
+    // 分别存储“重启点”和“当前点”的 GTID 集合
     private String restartGtidSet;
     private String currentGtidSet;
+    // 连接器重启时应开始读取的二进制日志文件名和位置。
     private String restartBinlogFilename;
     private long restartBinlogPosition = 0L;
+    // 在一个多行变更（Row Event）中，重启后需要跳过的行数。
     private int restartRowsToSkip = 0;
+    // 在同一个事务或同一个位点中，重启后需要跳过的事件数。
     private long restartEventsToSkip = 0;
+    // 当前正在处理的 binlog 事件的大小（用于计算下一个位点）。
     private long currentEventLengthInBytes = 0;
+    // 标记当前连接器是否正在处理一个事务块（BEGIN 到 COMMIT 之间）
     private boolean inTransaction = false;
+    // 当前事务的唯一标识符（GTID 或 文件位点组合）
     private String transactionId = null;
 
     public BinlogOffsetContext(SnapshotType snapshot, boolean snapshotCompleted, TransactionContext transactionContext,
@@ -66,7 +83,8 @@ public class BinlogOffsetContext<T extends BinlogSourceInfo> extends CommonOffse
         this.transactionContext = transactionContext;
         this.incrementalSnapshotContext = incrementalSnapshotContext;
     }
-
+    // 最核心方法。生成用于持久化的 Map
+    // 根据当前是否在快照期，决定返回快照偏移量还是包含事务/增量快照信息的流处理偏移量。
     @Override
     public Map<String, ?> getOffset() {
         final Map<String, Object> offset = offsetUsingPosition(restartRowsToSkip);
@@ -188,7 +206,8 @@ public class BinlogOffsetContext<T extends BinlogSourceInfo> extends CommonOffse
     public T getSource() {
         return sourceInfo;
     }
-
+    // 当监听到 BEGIN 事件时调用
+    // 行为：重置跳过的行/事件计数，标记 inTransaction 为 true，记录当前的起始位点。
     public void startNextTransaction() {
         // If we have to restart, then we'll start with this BEGIN transaction
         this.restartRowsToSkip = 0;
@@ -198,7 +217,8 @@ public class BinlogOffsetContext<T extends BinlogSourceInfo> extends CommonOffse
         this.inTransaction = true;
         setTransactionId();
     }
-
+    // 当监听到 COMMIT 或 XID 事件时调用。
+    // 行为：将当前位点确认为“安全重启点”，更新 restartGtidSet，重置事务标记。
     public void commitTransaction() {
         this.restartGtidSet = this.currentGtidSet;
         this.restartBinlogFilename = sourceInfo.binlogFilename();
@@ -279,6 +299,8 @@ public class BinlogOffsetContext<T extends BinlogSourceInfo> extends CommonOffse
      * @param totalNumberOfRows the total number of rows within the event being processed
      * @see BinlogSourceInfo#struct()
      */
+    // 处理多行变更事件中的行级追踪
+    // 如果当前不是最后一行，则 restartRowsToSkip 设置为下一行索引，确保重启后不重复消费已写入 Kafka 的行。
     public void setRowNumber(int eventRowNumber, int totalNumberOfRows) {
         sourceInfo.setRowNumber(eventRowNumber);
         if (eventRowNumber < (totalNumberOfRows - 1)) {
@@ -314,7 +336,7 @@ public class BinlogOffsetContext<T extends BinlogSourceInfo> extends CommonOffse
     private void resetTransactionId() {
         transactionId = null;
     }
-
+    // 将所有的 binlog 坐标（GTID, File, Pos, Skip）封装进 Map
     private Map<String, Object> offsetUsingPosition(long rowsToSkip) {
         final Map<String, Object> map = new HashMap<>();
         if (sourceInfo.getServerId() != 0) {

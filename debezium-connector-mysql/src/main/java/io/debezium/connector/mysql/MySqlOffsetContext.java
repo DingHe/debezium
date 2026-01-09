@@ -18,12 +18,15 @@ import io.debezium.pipeline.source.snapshot.incremental.SignalBasedIncrementalSn
 import io.debezium.pipeline.txmetadata.TransactionContext;
 import io.debezium.relational.TableId;
 
+// MySqlOffsetContext 是 Debezium MySQL 连接器中用于管理偏移量的最终具体实现类。
+// 它继承自 BinlogOffsetContext，专门负责 MySQL 数据库特定的位点恢复逻辑。
 public class MySqlOffsetContext extends BinlogOffsetContext<SourceInfo> {
 
     public MySqlOffsetContext(SnapshotType snapshot, boolean snapshotCompleted, TransactionContext transactionContext,
                               IncrementalSnapshotContext<TableId> incrementalSnapshotContext, SourceInfo sourceInfo) {
         super(snapshot, snapshotCompleted, transactionContext, incrementalSnapshotContext, sourceInfo);
     }
+    // 连接器首次启动时的工厂方法
 
     public static MySqlOffsetContext initial(MySqlConnectorConfig config) {
         final MySqlOffsetContext offset = new MySqlOffsetContext(
@@ -34,10 +37,11 @@ public class MySqlOffsetContext extends BinlogOffsetContext<SourceInfo> {
                         ? new MySqlReadOnlyIncrementalSnapshotContext<>()
                         : new SignalBasedIncrementalSnapshotContext<>(),
                 new SourceInfo(config));
+        // 表示从最开始的 binlog 位置准备扫描
         offset.setBinlogStartPoint("", 0L); // start from the beginning of the binlog
         return offset;
     }
-
+    // 位点加载器（Loader）：实现从 Kafka 存储的 Map 结构中“复活” MySQL 位点对象的逻辑。
     public static class Loader extends BinlogOffsetContext.Loader<MySqlOffsetContext> {
 
         private final MySqlConnectorConfig connectorConfig;
@@ -45,7 +49,7 @@ public class MySqlOffsetContext extends BinlogOffsetContext<SourceInfo> {
         public Loader(MySqlConnectorConfig connectorConfig) {
             this.connectorConfig = connectorConfig;
         }
-
+        // 持有 MySQL 连接器的配置信息，用于判断连接模式并创建 SourceInfo
         @Override
         public MySqlOffsetContext load(Map<String, ?> offset) {
             final String binlogFilename = (String) offset.get(SourceInfo.BINLOG_FILENAME_OFFSET_KEY);

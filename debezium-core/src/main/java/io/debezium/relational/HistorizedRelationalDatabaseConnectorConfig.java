@@ -29,24 +29,37 @@ import io.debezium.relational.history.SchemaHistoryMetrics;
  *
  * @author Gunnar Morling
  */
+// 专门为那些需要持久化存储数据库结构（Schema）历史的连接器（如 MySQL, SQL Server, Oracle 等）提供通用的配置逻辑。
+// 在 CDC（数据变更捕获）过程中，数据库的表结构会随时间变化（DDL 操作）。为了能够正确解析很久以前的 Binlog 或日志记录，Debezium 必须记录结构变化的每一个版本，而这个类就是管理这些“历史记录”配置的核心。
+// 定义 Schema 历史配置：提供如何存储（如 Kafka, 文件, 数据库等）和恢复数据库结构历史的标准化参数。
+// 管理 DDL 过滤逻辑：决定哪些 DDL 语句（如 CREATE, ALTER）应该被记录，哪些应该被忽略。
+// 实例化历史库组件：负责根据配置实例化 SchemaHistory 对象，并为其注入必要的运行参数。
+
 public abstract class HistorizedRelationalDatabaseConnectorConfig extends RelationalDatabaseConnectorConfig {
-
+    // 快照阶段默认每次从数据库拉取的行数（2000行）。
     protected static final int DEFAULT_SNAPSHOT_FETCH_SIZE = 2_000;
-
+    // 默认的历史记录存储实现类：KafkaSchemaHistory。
     private static final String DEFAULT_SCHEMA_HISTORY = "io.debezium.storage.kafka.history.KafkaSchemaHistory";
-
+    // 标识在标识符命名中，Catalog 是否位于 Schema 之前（如 MySQL 中 catalog 即 database）。
     private final boolean useCatalogBeforeSchema;
+    // 当前连接器的类类型（用于在历史记录中标识来源）。
     private final Class<? extends SourceConnector> connectorClass;
+    // 是否处于多分区模式。
     private final boolean multiPartitionMode;
+    // 用于过滤不需要记录到历史中的 DDL 语句（基于正则表达式）。
     private final Predicate<String> ddlFilter;
+    // 当遇到无法解析的 DDL 语句时，是跳过还是抛出异常中断。
     protected boolean skipUnparseableDDL;
+    // 是否只存储那些“被列入捕获名单（Include List）”的表的结构变更。
     protected boolean storeOnlyCapturedTablesDdl;
+    // 是否只存储那些“被列入捕获名单”的数据库的结构变更。
     protected boolean storeOnlyCapturedDatabasesDdl;
 
     /**
      * The database schema history class is hidden in the {@link #configDef()} since that is designed to work with a user interface,
      * and in these situations using Kafka is the only way to go.
      */
+    // 定义使用哪个类来存储历史
     public static final Field SCHEMA_HISTORY = Field.create("schema.history.internal")
             .withDisplayName("Database schema history class")
             .withType(Type.CLASS)
@@ -57,9 +70,9 @@ public abstract class HistorizedRelationalDatabaseConnectorConfig extends Relati
                     + "The configuration properties for the history are prefixed with the '"
                     + SchemaHistory.CONFIGURATION_FIELD_PREFIX_STRING + "' string.")
             .withDefault(DEFAULT_SCHEMA_HISTORY);
-
+    // 是否跳过解析失败的 DDL。
     public static final Field SKIP_UNPARSEABLE_DDL_STATEMENTS = SchemaHistory.SKIP_UNPARSEABLE_DDL_STATEMENTS;
-
+    // 开启后，非捕获表的 ALTER TABLE 等操作不会存入历史，减小历史记录体积。
     public static final Field STORE_ONLY_CAPTURED_TABLES_DDL = SchemaHistory.STORE_ONLY_CAPTURED_TABLES_DDL;
 
     public static final Field STORE_ONLY_CAPTURED_DATABASES_DDL = SchemaHistory.STORE_ONLY_CAPTURED_DATABASES_DDL;

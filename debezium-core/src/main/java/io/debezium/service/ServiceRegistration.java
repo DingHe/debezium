@@ -12,10 +12,20 @@ import io.debezium.service.spi.ServiceProvider;
  *
  * @author Chris Cranford
  */
+// ServiceRegistration 的主要作用是描述并追踪一个服务的注册信息。
+// 在 DefaultServiceRegistry（服务注册表）中，并不是直接存储服务对象，而是存储一个个 ServiceRegistration 对象。它的核心价值在于支持以下两种服务模式：
+// 即时模式（Eager）：服务实例已经存在，直接将其注册。
+// 延迟模式（Lazy）：只提供一个“生产工厂”（ServiceProvider），只有当真正有人需要使用该服务时，才通过该工厂去创建实例。
 public final class ServiceRegistration<T extends Service> {
-
+    // 服务类型标识。
+    // 记录该服务对应的接口或实现类的类型（例如 SchemaHistory.class）。
+    // 它是注册表进行查找时的“唯一键”。
     private final Class<T> serviceClass;
+    // 服务提供者（工厂）。
+    // 如果服务是延迟加载的，这里保存了如何创建该服务的逻辑。如果是即时注册的，则此项为 null。
     private final ServiceProvider<T> serviceProvider;
+    // 服务实例缓存。
+    // 一旦服务被创建或注入，其实例会保存在这里。使用 volatile 关键字确保了在多线程环境下（如 Kafka Connect 的不同线程），该实例的可见性是安全的。
     private volatile T service;
 
     /**

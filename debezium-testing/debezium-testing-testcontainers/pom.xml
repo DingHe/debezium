@@ -155,10 +155,10 @@
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
-            <plugin>
+      <!--      <plugin>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <configuration>
-                    <argLine>--add-opens java.base/java.net=ALL-UNNAMED</argLine>
+                    <argLine>&#45;&#45;add-opens java.base/java.net=ALL-UNNAMED</argLine>
                     <skipTests>${skipITs}</skipTests>
                     <systemPropertyVariables>
                         <version.mongo.server>${version.mongo.server}</version.mongo.server>
@@ -172,7 +172,7 @@
                         </goals>
                     </execution>
                 </executions>
-            </plugin>
+            </plugin>-->
         </plugins>
     </build>
     <profiles>

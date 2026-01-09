@@ -26,18 +26,34 @@ import io.debezium.util.Clock;
  *
  * @author Gunnar Morling
  */
+// SchemaChangeEvent 是 Debezium 架构中用于表示数据库结构变更（如 DDL 操作）的核心类。
+// 它不仅记录了变更的 SQL 语句（DDL），还包含了变更后的表结构模型以及相关的元数据。
+// 记录 DDL 操作：它捕获了导致结构变化的原始 SQL（如 ALTER TABLE...）。
+// 同步内存模型：当数据库结构变化时，Debezium 需要更新其内部维护的表结构映射，该类携带了更新后的 Table 对象。
+// 持久化架构历史：这些事件会被发送到 Kafka 的 schema-changes 主题中，用于后续的故障恢复和下游解析。
+// 关联位点：它将架构变更与数据库日志（如 Binlog 位置）关联，确保数据解析的一致性。
 public class SchemaChangeEvent {
-
+    // 发生变更的数据库名称。
     private final String database;
+    // 发生变更的模式（Schema/Namespace）名称。在 MySQL 中通常为空，在 PostgreSQL/Oracle 中很重要。
     private final String schema;
+    // 触发变更的原始 DDL SQL 语句。在快照阶段可能为 null。
     private final String ddl;
+    // 受此次变更影响的表模型集合。包含列定义、主键、类型等详细元数据。
     private final Set<Table> tables;
+    // 变更类型（如 CREATE, ALTER, DROP）
     private final SchemaChangeEventType type;
+    // Kafka Connect 的分区信息，标识来源数据库实例。
     private final Map<String, ?> partition;
+    // 事件发生时的位点信息（如 Binlog 文件名和位置）。
     private final Map<String, ?> offset;
+    // 事件源的详细信息结构体（由各连接器实现，如插件版本、连接器名称等）。
     private final Struct source;
+    // 标识该架构信息是在启动快照（Snapshot）阶段获取的，还是在增量流（Streaming）阶段捕获的 DDL。
     private final boolean isFromSnapshot;
+    // 事件生成的时间戳。
     private final Instant timestamp;
+    // 将 tables 中的模型转换为一种可序列化的内部格式，用于写入 Kafka 消息。
     private final TableChanges tableChanges = new TableChanges();
 
     private SchemaChangeEvent(Map<String, ?> partition, Map<String, ?> offset, Struct source, String database, String schema, String ddl, Table table,

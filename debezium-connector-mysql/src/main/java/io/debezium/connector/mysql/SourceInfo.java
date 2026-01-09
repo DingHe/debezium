@@ -76,6 +76,8 @@ import io.debezium.data.Envelope;
  *
  * @author Randall Hauch
  */
+// SourceInfo 类的核心作用是 作为 MySQL 连接器的特定上下文入口。
+// 具体化实现：它是 BinlogSourceInfo 的 MySQL 版具体实现。虽然目前它的逻辑主要复用了基类的代码，但它的存在为 MySQL 连接器提供了独立的扩展空间。
 @NotThreadSafe
 public final class SourceInfo extends BinlogSourceInfo {
     public SourceInfo(MySqlConnectorConfig connectorConfig) {

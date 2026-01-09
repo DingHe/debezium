@@ -63,6 +63,14 @@ import io.debezium.util.Threads;
  *
  * @author Gunnar Morling
  */
+// 在 Debezium 的架构中，ChangeEventSourceCoordinator 是整个数据采集流程的**“总指挥官”**。
+// 它负责协调快照（Snapshot）和增量流（Streaming）两个阶段的转换，并管理信号处理、度量指标和错误恢复。
+// 核心职责是管理变更事件源的生命周期和执行顺序。
+// 在 CDC 过程中，通常需要先对数据库进行一次“全量快照”，然后再无缝切换到“增量流”读取（如 Binlog）。这个类确保了：
+// 阶段协调：先执行快照，成功后再启动流式处理。
+// 线程管理：在独立的后台线程中执行耗时的采集任务，不阻塞 Kafka Connect 的主线程。
+// 状态监控：注册并更新 JMX 监控指标（快照进度、流延迟等）。
+// 交互处理：启动信号处理器（Signal Processor），允许用户在运行时通过信号表或 JMX 发送指令。
 @ThreadSafe
 public class ChangeEventSourceCoordinator<P extends Partition, O extends OffsetContext> {
 
@@ -71,26 +79,34 @@ public class ChangeEventSourceCoordinator<P extends Partition, O extends OffsetC
     /**
      * Waiting period for the polling loop to finish. Will be applied twice, once gracefully, once forcefully.
      */
-
+    // 存储连接器上次停止时的位点信息，用于断点续传。
     protected final Offsets<P, O> previousOffsets;
     protected final ErrorHandler errorHandler;
+    // 工厂类，用于创建具体的快照源和流式源实例。
     protected final ChangeEventSourceFactory<P, O> changeEventSourceFactory;
     protected final ChangeEventSourceMetricsFactory<P> changeEventSourceMetricsFactory;
     protected final SnapshotterService snapshotterService;
+    // 单线程执行器，所有的采集逻辑（快照+流）都在这个线程中按序运行。
     protected final ExecutorService executor;
+    // 专门用于处理“阻塞式快照”请求的额外线程。
     private final ExecutorService blockingSnapshotExecutor;
+    // 事件分发器，负责将读取到的原始数据发送到 Kafka Connect 的缓冲区。
     protected final EventDispatcher<P, ?> eventDispatcher;
+    // 数据库架构缓存，记录表结构信息。
     protected final DatabaseSchema<?> schema;
+    // 信号处理器，负责处理运行时的各种控制信号。
     protected final SignalProcessor<P, O> signalProcessor;
+    // 通知服务，用于向外部报告连接器状态变更（如快照开始/结束）。
     protected final NotificationService<P, O> notificationService;
     protected final CommonConnectorConfig connectorConfig;
-
+    // 标记整个协调器是否正在运行。
     private volatile boolean running;
+    // 协调快照与流切换状态的内部标志，用于阻塞式快照时的状态同步。
     private volatile boolean paused;
     private volatile boolean streaming;
     protected volatile StreamingChangeEventSource<P, O> streamingSource;
     protected final ReentrantLock commitOffsetLock = new ReentrantLock();
-
+    // 分别负责记录快照阶段和增量阶段的 JMX 数据。
     protected SnapshotChangeEventSourceMetrics<P> snapshotMetrics;
     protected StreamingChangeEventSourceMetrics<P> streamingMetrics;
     private ChangeEventSourceContext context;

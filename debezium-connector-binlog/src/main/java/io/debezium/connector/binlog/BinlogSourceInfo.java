@@ -82,11 +82,18 @@ import io.debezium.relational.TableId;
  * @author Randall Hauch
  * @author Chris Cranford
  */
+// BinlogSourceInfo 是 Debezium 中专为基于 Binlog（二进制日志） 的数据库（主要是 MySQL 和 MariaDB）设计的元数据管理类。
+// 该类的核心作用是追踪和记录当前处理到的 Binlog 位置信息。
+// 偏移量追踪 (Offset Tracking)：记录当前读取到哪一个 Binlog 文件、什么位置（Position）、以及在同一个事件（Event）中的第几行记录。这些信息会被定期保存到 Kafka 的偏移量主题中，确保连接器重启后能从断点续传。
+// 上下文提供：为每一条生成的 Kafka 消息填充 source 字段，包含诸如事务 ID (GTID)、服务器 ID、产生变更的 SQL 语句、线程 ID 等调试和审计信息。
+// 唯一性定位：在分布式场景下，通过 GTID 或 File + Position 的组合，精确定位数据库中的任何一次变更。
+
 @NotThreadSafe
 public class BinlogSourceInfo extends BaseSourceInfo {
 
     // Avro Schema doesn't allow "-" to be included as field name, use "_" instead.
     // Ref https://issues.apache.org/jira/browse/AVRO-838.
+    // 这些常量定义了输出到 Kafka 或存储在 Offset 中的字段名称：
     public static final String SERVER_ID_KEY = "server_id";
 
     public static final String GTID_KEY = "gtid";
@@ -95,16 +102,25 @@ public class BinlogSourceInfo extends BaseSourceInfo {
     public static final String BINLOG_ROW_IN_EVENT_OFFSET_KEY = "row";
     public static final String THREAD_KEY = "thread";
     public static final String QUERY_KEY = "query";
-
+    // 存储当前的 GTID 字符串
     private String currentGtid;
+    // 存储当前的 Binlog 文件名
     private String currentBinlogFilename;
+    // 存储当前的 Position 位置
     private long currentBinlogPosition = 0L;
+    // 记录当前处理到 Event 中的第几行
     private int currentRowNumber = 0;
+    // 记录来源服务器的 ID
     private long serverId = 0;
+    // 事件在数据库中发生的时刻（Instant 类型）
     private Instant sourceTime = null;
+    // 数据库执行该操作的线程 ID
     private long threadId = -1L;
+    // 存储原始 SQL 语句
     private String currentQuery = null;
+    // 一个集合，存储当前事件涉及到的表 ID
     private Set<TableId> tableIds;
+    // 当前操作的数据库名称。
     private String databaseName;
 
     public BinlogSourceInfo(BinlogConnectorConfig connectorConfig) {
@@ -352,6 +368,7 @@ public class BinlogSourceInfo extends BaseSourceInfo {
      * @param offset the offset to create the document from.
      * @return a {@link Document} with the offset data.
      */
+    // 将 Kafka Connect 存储的 Map 格式偏移量转换成 Debezium 内部使用的 Document 格式，方便进行文档化处理或数据转换。
     public static Document createDocumentFromOffset(Map<String, ?> offset) {
         final Document offsetDocument = Document.create();
 
