@@ -36,11 +36,20 @@ import io.debezium.util.Clock;
  *
  * @author Jiri Pechanec
  */
+// 如果说 Binlog... 类是一个通用的框架，那么 MySql... 类就是针对 MySQL 数据库特性的定制化实现，
+// 它专门处理 MySQL 的 GTID 逻辑、SSL 连接模式以及特定的事件时间戳解析。
+// MySQL 特性适配：实现 MySQL 特有的逻辑，特别是对 GTID (Global Transaction Identifier) 的精细化控制。
+// 高精度时间戳提取：从 MySQL 8.0+ 的事件中提取微秒级的时间戳，提供更精确的延迟监控。
+// 连接配置适配：将 Debezium 的通用安全配置转换为 MySQL 驱动识别的 SSLMode。
+// 事件过滤：根据 GTID 的来源（UUID）决定是否忽略某些特定服务器产生的 DML 变更。
+
 public class MySqlStreamingChangeEventSource extends BinlogStreamingChangeEventSource<MySqlPartition, MySqlOffsetContext> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MySqlStreamingChangeEventSource.class);
-
+    // MySQL 专用的配置对象。包含了 MySQL 特有的配置项，如 GTID 过滤器、连接模式等。
     private final MySqlConnectorConfig connectorConfig;
+    // 核心属性。类型为 com.github.shyiko.mysql.binlog.GtidSet。
+    // 它代表了当前已处理的 GTID 集合，用于在高可用（HA）环境下确保数据不丢不重。
     private GtidSet gtidSet;
 
     public MySqlStreamingChangeEventSource(MySqlConnectorConfig connectorConfig,

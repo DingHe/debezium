@@ -30,7 +30,9 @@ import io.debezium.relational.TableId;
 import io.debezium.snapshot.SnapshotterService;
 import io.debezium.spi.schema.DataCollectionId;
 import io.debezium.util.Clock;
-
+// 它的核心职责是：根据当前的配置和数据库状态，组装并初始化最适合的事件源对象。
+// 它像一个“装配车间”，把数据库连接、架构信息、错误处理器等零散组件组装成一个完整的“任务执行器”。
+// 这些属性大多是从外界（Task 层面）注入的单例或共享组件，用于传递给它创建出来的 Source 对象。
 public class MySqlChangeEventSourceFactory implements ChangeEventSourceFactory<MySqlPartition, MySqlOffsetContext> {
 
     private final MySqlConnectorConfig configuration;

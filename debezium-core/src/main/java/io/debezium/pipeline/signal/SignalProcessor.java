@@ -42,6 +42,13 @@ import io.debezium.util.Threads;
  *
  * @author Mario Fiore Vitale
  */
+// SignalProcessor 是 Debezium 中负责信号处理的核心组件。它允许用户在连接器运行时，通过外部渠道（如专用数据库表、Kafka Topic、JMX 或文件）向 Debezium 发送指令。
+// 这种“运行时指令”机制最典型的应用场景就是增量快照（Incremental Snapshot）：你可以在不重启连接器的情况下，发送一个信号让 Debezium 重新扫描某几张大表。
+// 多渠道监听：统一管理多个信号渠道（如 Kafka 信号频道、数据库表信号频道）。
+// 指令解耦：将接收到的原始信号（SignalRecord）映射为具体的动作（SignalAction），如启动快照、打印日志等。
+// 异步调度：内置线程池，定期轮询（Poll）外部信号，不阻塞主数据流。
+// 分区感知：能够识别信号是针对哪个数据库分区（Partition）的，确保指令发送到正确的实例。
+
 public class SignalProcessor<P extends Partition, O extends OffsetContext> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SignalProcessor.class);
@@ -49,21 +56,23 @@ public class SignalProcessor<P extends Partition, O extends OffsetContext> {
     public static final int SEMAPHORE_WAIT_TIME = 10;
     public static final String DATA_COLLECTIONS_FIELD_NAME = "data-collections";
     public static final String POINT_REGEX = "\\.";
-
+    // 信号动作注册表。
+    // Key 是信号类型（如 execute-snapshot），Value 是对应的处理逻辑。
     private final Map<String, SignalAction<P>> signalActions = new HashMap<>();
-
+    // 连接器通用配置，用于获取轮询间隔、启用的信号渠道等。
     private final CommonConnectorConfig connectorConfig;
-
+    // 经过配置筛选后，当前任务真正启用的信号读取器列表。
     private final List<SignalChannelReader> enabledChannelReaders;
 
     private final List<SignalChannelReader> signalChannelReaders;
-
+    // 核心调度器。
+    // 一个单线程的定时执行器，负责定期触发信号读取任务。
     private final ScheduledExecutorService signalProcessorExecutor;
-
+    // JSON 解析器，用于解析信号数据（Data）字段中的 JSON 负载。
     private final DocumentReader documentReader;
-
+    // 维护当前任务负责的所有分区及其对应的位点上下文。
     private final Map<P, O> partitionOffsets = new ConcurrentHashMap<>();
-
+    // 信号量（大小为 1）。用于确保同一时间只有一个信号处理任务在运行，防止并发冲突。
     private final Semaphore semaphore = new Semaphore(1);
 
     public SignalProcessor(Class<? extends SourceConnector> connector,
