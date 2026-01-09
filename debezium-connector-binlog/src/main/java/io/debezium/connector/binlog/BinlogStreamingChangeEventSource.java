@@ -100,6 +100,14 @@ import io.debezium.util.Threads;
  * @author Jiri Pechanec
  * @author Chris Cranford
  */
+// 专门用于处理基于 Binlog（二进制日志） 协议的数据库（如 MySQL、MariaDB）的增量变更捕获。
+// 封装了底层 mysql-binlog-connector-java 库的复杂性，将原始的二进制字节流转换为 Debezium 的事件模型。
+// 核心使命是实现 “增量读取阶段”：
+// 建立长连接：伪装成数据库的一个从库（Replica），通过 Binlog 协议与主库通信。
+// 事件路由：将接收到的不同类型的 Binlog 事件（如 WRITE_ROWS, QUERY, GTID 等）分发给相应的处理器（Handler）。
+// 状态管理：处理 GTID 集合的合并、断点续传逻辑（Skip Events）、以及维护读取位点（Offset）。
+// 容错与监控：处理 SSL 连接、心跳维持、序列化失败处理，并更新 JMX 监控指标（Metrics）。
+
 public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition, O extends BinlogOffsetContext>
         implements StreamingChangeEventSource<P, O> {
 
@@ -108,11 +116,12 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
     private static final String KEEPALIVE_THREAD_NAME = "blc-keepalive";
     private static final String SET_STATEMENT_REGEX = "SET STATEMENT .* FOR";
     private static final Pattern TRUNCATE_STATEMENT_PATTERN = Pattern.compile("(SET STATEMENT .*)?TRUNCATE TABLE .*", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-
+    // 底层 BinaryLogClient 实例，负责底层的网络连接和协议解析。
     private final BinaryLogClient client;
     private final BinlogStreamingChangeEventSourceMetrics<?, P> metrics;
     // todo: can we go back to accessing schema via task context? issue is all the generics :/
     private final BinlogTaskContext<?> taskContext;
+    // 内存中的数据库结构模型，解析 DDL 事件时会更新此对象。
     private final BinlogDatabaseSchema schema;
     private final BinlogConnectorConfig connectorConfig;
     private final BinlogConnectorConnection connection;
@@ -122,18 +131,27 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
     private final EventProcessingFailureHandlingMode eventDeserializationFailureHandlingMode;
     private final EventProcessingFailureHandlingMode inconsistentSchemaHandlingMode;
     private final SnapshotterService snapshotterService;
+    // 过滤器，用于在 GTID 模式下过滤掉来自特定服务器 ID 的 DML 操作。
     private final Predicate<String> gtidDmlSourceFilter;
+    // 标记位，指示源数据库是否启用了 GTID（全局事务 ID）模式。
     private final boolean isGtidModeEnabled;
     private final AtomicLong totalRecordCounter = new AtomicLong();
+    // 存储 Binlog 客户端启动的后台线程，用于监控心跳线程（Keepalive）的状态。
     private final Map<String, Thread> binaryLogClientThreads = new ConcurrentHashMap<>(4);
+    // 一个映射表，
+    // 存储了每种 EventType 对应的处理逻辑（如 handleInsert）。
     private final EnumMap<EventType, BlockingConsumer<Event>> eventHandlers = new EnumMap<>(EventType.class);
+    // 默认为 0.8。用于确保心跳频率略快于连接超时时间，防止连接断开。
     private final float heartbeatIntervalFactor = 0.8f;
 
     private int startingRowNumber = 0;
+    // 重启时需要跳过的事件数量。
+    // 用于解决事务执行到一半时宕机导致的重复处理问题。
     private long initialEventsToSkip = 0L;
     private boolean skipEvent = false;
     private boolean ignoreDmlEventByGtidSource = false;
     private volatile Map<String, ?> lastOffset = null;
+    // 当前生效的位点上下文，记录了正在处理的 Binlog 文件名、Pos 和 GTID。
     private O effectiveOffsetContext;
 
     @SingleThreadAccess("binlog client thread")
@@ -165,15 +183,21 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
         this.gtidDmlSourceFilter = getGtidDmlSourceFilter();
         this.isGtidModeEnabled = connection.isGtidModeEnabled();
     }
+    // Debezium 增量同步阶段（Streaming）的总入口。
+    // 它的逻辑非常严密，负责从初始化处理器、对齐 GTID 位点、建立物理连接到最后的运行循环。
 
     @Override
     public void execute(ChangeEventSourceContext context, P partition, O offsetContext) throws InterruptedException {
+        // 确保内存中的表结构不为空。如果之前做过快照，这里必须有结构信息
         if (!(snapshotterService.getSnapshotter() instanceof NeverSnapshotter)) {
             schema.assureNonEmptySchema();
         }
+        // 从配置中获取需要跳过的操作（如跳过 DELETE）
         final Set<Envelope.Operation> skippedOperations = connectorConfig.getSkippedOperations();
 
         // Register our event handlers ...
+        // 将特定的 Binlog 事件类型（EventType）映射到具体的处理方法上。
+        // 基础服务器事件
         eventHandlers.put(EventType.STOP, (event) -> handleServerStop(effectiveOffsetContext, event));
         eventHandlers.put(EventType.HEARTBEAT, (event) -> handleServerHeartbeat(partition, effectiveOffsetContext, event));
         eventHandlers.put(EventType.INCIDENT, (event) -> handleServerIncident(partition, effectiveOffsetContext, event));
@@ -181,22 +205,22 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
         eventHandlers.put(EventType.TABLE_MAP, (event) -> handleUpdateTableMetadata(partition, effectiveOffsetContext, event));
         eventHandlers.put(EventType.QUERY, (event) -> handleQueryEvent(partition, effectiveOffsetContext, event));
         eventHandlers.put(EventType.TRANSACTION_PAYLOAD, (event) -> handleTransactionPayload(partition, effectiveOffsetContext, context, event));
-
+        // 动态注册 DML 事件（增删改），会根据 skippedOperations 配置决定是否处理
         if (!skippedOperations.contains(Envelope.Operation.CREATE)) {
             eventHandlers.put(EventType.WRITE_ROWS, (event) -> handleInsert(partition, effectiveOffsetContext, event));
             eventHandlers.put(EventType.EXT_WRITE_ROWS, (event) -> handleInsert(partition, effectiveOffsetContext, event));
         }
-
+        // 更新实践
         if (!skippedOperations.contains(Envelope.Operation.UPDATE)) {
             eventHandlers.put(EventType.UPDATE_ROWS, (event) -> handleUpdate(partition, effectiveOffsetContext, event));
             eventHandlers.put(EventType.EXT_UPDATE_ROWS, (event) -> handleUpdate(partition, effectiveOffsetContext, event));
         }
-
+        // 删除事件
         if (!skippedOperations.contains(Envelope.Operation.DELETE)) {
             eventHandlers.put(EventType.DELETE_ROWS, (event) -> handleDelete(partition, effectiveOffsetContext, event));
             eventHandlers.put(EventType.EXT_DELETE_ROWS, (event) -> handleDelete(partition, effectiveOffsetContext, event));
         }
-
+        // 视图变更事件
         eventHandlers.put(EventType.VIEW_CHANGE, (event) -> viewChange(effectiveOffsetContext, event));
         eventHandlers.put(EventType.XA_PREPARE, (event) -> prepareTransaction(effectiveOffsetContext, event));
         eventHandlers.put(EventType.XID, (event) -> handleTransactionCompletion(partition, effectiveOffsetContext, event));
@@ -206,7 +230,7 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
             final EventType eventType = getIncludeQueryEventType();
             eventHandlers.put(eventType, (event) -> handleRecordingQuery(effectiveOffsetContext, event));
         }
-
+        // 如果缓冲区大小为0，直接处理事件；否则先放入 EventBuffer 缓冲，以提高吞吐
         BinaryLogClient.EventListener listener;
         if (connectorConfig.getBufferSizeForStreamingChangeEventSource() == 0) {
             listener = (event) -> handleEvent(partition, effectiveOffsetContext, context, event);
@@ -215,6 +239,8 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
             EventBuffer<?, P, O> buffer = new EventBuffer<>(connectorConfig.getBufferSizeForStreamingChangeEventSource(), this, context);
             listener = (event) -> buffer.add(partition, effectiveOffsetContext, event);
         }
+        // 将监听器注册到底层 Binlog 客户端
+        // 消费逻辑的起点：底层的回调
         client.registerEventListener(listener);
 
         client.registerLifecycleListener(new ReaderThreadLifecycleListener(effectiveOffsetContext));
@@ -226,18 +252,22 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
         metrics.setIsGtidModeEnabled(isGtidModeEnabled);
 
         // Get the current GtidSet from MySQL so we can get a filtered/merged GtidSet based off of the last Debezium checkpoint.
+        // 如果开启了 GTID 模式，连接器需要计算从哪个事务集合开始读取。
         if (isGtidModeEnabled) {
             // The server is using GTIDs, so enable the handler ...
+            // 注册 GTID 事件处理器
             eventHandlers.put(getGtidEventType(),
                     (event) -> handleGtidEvent(partition, effectiveOffsetContext, event, gtidDmlSourceFilter));
 
             // Now look at the GTID set from the server and what we've previously seen ...
+            // 数据库当前已执行的 GTID
             GtidSet availableServerGtidSet = connection.knownGtidSet();
 
             // also take into account purged GTID logs
+            // 数据库已清理的 GTID
             GtidSet purgedServerGtidSet = connection.purgedGtidSet();
             LOGGER.info("GTID set purged on server: '{}'", purgedServerGtidSet);
-
+            // 关键：将“服务器位点”、“已清理位点”和“Debezium 记录的旧位点”进行过滤合并
             final GtidSet filteredGtidSet = connection.filterGtidSet(
                     connectorConfig.getGtidSourceFilter(),
                     effectiveOffsetContext.gtidSet(),
@@ -246,6 +276,7 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
 
             if (filteredGtidSet != null) {
                 // We've seen at least some GTIDs, so start reading from the filtered GTID set ...
+                // 如果有历史位点，设置客户端从该 GTID 集合开始读取
                 LOGGER.info("Registering binlog reader with GTID set: '{}'", filteredGtidSet);
                 String filteredGtidSetStr = filteredGtidSet.toString();
                 client.setGtidSet(filteredGtidSetStr);
@@ -254,6 +285,7 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
             }
             else {
                 // We've not yet seen any GTIDs, so that means we have to start reading the binlog from the beginning ...
+                // 如果没有历史位点（新任务），则回退到使用 Binlog 文件名和 Pos 定位
                 client.setBinlogFilename(effectiveOffsetContext.getSource().binlogFilename());
                 client.setBinlogPosition(effectiveOffsetContext.getSource().binlogPosition());
                 if (purgedServerGtidSet == null || purgedServerGtidSet.isEmpty()) {
@@ -271,16 +303,19 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
             }
         }
         else {
+            // 非 GTID 模式：直接根据文件名和 Pos 定位
             // The server is not using GTIDs, so start reading the binlog based upon where we last left off ...
             client.setBinlogFilename(effectiveOffsetContext.getSource().binlogFilename());
             client.setBinlogPosition(effectiveOffsetContext.getSource().binlogPosition());
         }
 
         // We may be restarting in the middle of a transaction, so see how far into the transaction we have already processed...
+        // 恢复由于事务中断需要跳过的事件数（Binlog Event 级别）
         initialEventsToSkip = effectiveOffsetContext.eventsToSkipUponRestart();
         LOGGER.info("Skip {} events on streaming start", initialEventsToSkip);
 
         // Set the starting row number, which is the next row number to be read ...
+        // 恢复需要跳过的行数（Row 级别）
         startingRowNumber = effectiveOffsetContext.rowsToSkipUponRestart();
         LOGGER.info("Skip {} rows on streaming start", startingRowNumber);
 
@@ -294,10 +329,12 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
                 long started = clock.currentTimeInMillis();
                 try {
                     LOGGER.debug("Attempting to establish binlog reader connection with timeout of {} ms", timeout);
+                    // 发起物理连接，内部会启动多线程读取 Binlog
                     client.connect(timeout);
                     // Need to wait for keepalive thread to be running, otherwise it can be left orphaned
                     // The problem is with timing. When the close is called too early after connect then
                     // the keepalive thread is not terminated
+                    //存活检查逻辑：确保底层的 keepalive 线程已启动，防止关闭连接时产生孤儿线程
                     if (client.isKeepAlive()) {
                         LOGGER.info("Waiting for keepalive thread to start");
                         final Metronome metronome = Metronome.parker(Duration.ofMillis(100), clock);
@@ -338,8 +375,11 @@ public abstract class BinlogStreamingChangeEventSource<P extends BinlogPartition
                             connectorConfig.getHostName(), connectorConfig.getPort(), connectorConfig.getUserName(), e.getMessage()), e);
                 }
             }
+            // 【核心运行循环】只要 context 是运行状态，主线程就保持阻塞，
+            // 真正的事件处理是在底层 BinaryLogClient 的回调线程中完成的
             while (context.isRunning()) {
                 Thread.sleep(100);
+                // 支持外部指令暂停流处理
                 waitWhenStreamingPaused(context);
             }
         }

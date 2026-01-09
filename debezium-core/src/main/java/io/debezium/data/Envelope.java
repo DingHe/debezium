@@ -27,6 +27,12 @@ import io.debezium.schema.SchemaFactory;
  *
  * @author Randall Hauch
  */
+// Envelope（信封）是一个至关重要的类。它定义了 Debezium 输出到 Kafka 的消息的标准结构。
+// Envelope 的核心作用是标准化变更事件的输出格式。
+// 由于不同的数据库（MySQL, PostgreSQL, Oracle 等）底层存储变更的方式各不相同，Debezium 需要一种统一的“信封”来包装这些变更。
+// 统一性：无论底层是哪种数据库，输出的 Kafka 消息都包含 before、after、source 和 op 等固定字段。
+// 元数据封装：它不仅包含数据本身的变更，还记录了操作类型（增删改）、源头元数据（库表名、偏移量）以及事务信息。
+
 public final class Envelope {
 
     public static final int SCHEMA_VERSION = 2;
@@ -34,6 +40,7 @@ public final class Envelope {
     /**
      * The constants for the values for the {@link FieldName#OPERATION operation} field in the message envelope.
      */
+    // 定义了变更事件的类型，每个类型对应一个单字符代码：
     public enum Operation {
 
         /**
@@ -59,6 +66,7 @@ public final class Envelope {
         /**
          * An operation that resulted in a generic message
          */
+        // 通用消息（如心跳等）
         MESSAGE("m");
 
         // Enum .values() returns a new array upon each invocation
@@ -87,10 +95,12 @@ public final class Envelope {
     /**
      * The constants for the names of the fields in the message envelope.
      */
+    // 定义了信封中所有标准字段的名称：
     public static final class FieldName {
         /**
          * The {@code before} field is used to store the state of a record before an operation.
          */
+        // 变更前的数据（更新或删除时有效）
         public static final String BEFORE = "before";
         /**
          * The {@code after} field is used to store the state of a record after an operation.
@@ -104,10 +114,12 @@ public final class Envelope {
          * The {@code origin} field is used to store the information about the source of a record, including the
          * Kafka Connect partition and offset information.
          */
+        // 记录事件源头信息（如 binlog 文件名、位置等）
         public static final String SOURCE = "source";
         /**
          * The optional metadata information associated with transaction - like transaction id.
          */
+        // 事务元数据（如果开启了事务监控）
         public static final String TRANSACTION = "transaction";
         /**
          * The {@code ts_ms} field is used to store the information about the local time at which the connector
@@ -135,6 +147,7 @@ public final class Envelope {
     /**
      * The immutable set of all {@link FieldName}s.
      */
+    // 包含上述所有标准字段名，用于校验
     public static final Set<String> ALL_FIELD_NAMES;
 
     static {
@@ -153,6 +166,7 @@ public final class Envelope {
     /**
      * A suffix appended to each schema name representing Envelope
      */
+    // 所有生成的 Schema 名称都会带上这个后缀
     public static String SCHEMA_NAME_SUFFIX = ".Envelope";
 
     /**
@@ -222,11 +236,11 @@ public final class Envelope {
          */
         Envelope build();
     }
-
+    // 用于根据当前表的 Schema 定义一个新的信封 Schema。
     public static Builder defineSchema() {
         return SchemaFactory.get().datatypeEnvelopeSchema();
     }
-
+    // 将现有的 Kafka Connect Schema 封装成 Envelope 对象
     public static Envelope fromSchema(Schema schema) {
         return new Envelope(schema);
     }
@@ -254,6 +268,7 @@ public final class Envelope {
      * @param timestamp the timestamp for this message; may be null
      * @return the read message; never null
      */
+    // 类似于 create，但 op 为 r，通常用于全量快照阶段。
     public Struct read(Object record, Struct source, Instant timestamp) {
         Struct struct = new Struct(schema);
         struct.put(FieldName.OPERATION, Operation.READ.code());
@@ -277,6 +292,7 @@ public final class Envelope {
      * @param timestamp the timestamp for this message; may be null
      * @return the create message; never null
      */
+    // 将 op 设置为 c，并将数据放入 after 字段。
     public Struct create(Object record, Struct source, Instant timestamp) {
         Struct struct = new Struct(schema);
         struct.put(FieldName.OPERATION, Operation.CREATE.code());
@@ -301,6 +317,7 @@ public final class Envelope {
      * @param timestamp the timestamp for this message; may be null
      * @return the update message; never null
      */
+    // 将 op 设置为 u。如果提供了 before（取决于配置），则填充它；必须填充 after。
     public Struct update(Object before, Struct after, Struct source, Instant timestamp) {
         Struct struct = new Struct(schema);
         struct.put(FieldName.OPERATION, Operation.UPDATE.code());
@@ -327,6 +344,7 @@ public final class Envelope {
      * @param timestamp the timestamp for this message; may be null
      * @return the delete message; never null
      */
+    // 将 op 设置为 d，数据放入 before 字段，after 为空。
     public Struct delete(Object before, Struct source, Instant timestamp) {
         Struct struct = new Struct(schema);
         struct.put(FieldName.OPERATION, Operation.DELETE.code());
@@ -351,6 +369,7 @@ public final class Envelope {
      * @param timestamp the timestamp for this message; never null
      * @return the truncate message; never null
      */
+    // 将 op 设置为 t，由于是全表操作，只记录 source 和时间戳，不记录单行数据。
     public Struct truncate(Struct source, Instant timestamp) {
         Struct struct = new Struct(schema);
         struct.put(FieldName.OPERATION, Operation.TRUNCATE.code());
@@ -367,6 +386,7 @@ public final class Envelope {
      * @param record the source record; may not be null
      * @return the operation, or null if no valid operation was found in the record
      */
+    // 从一个已经生成的 SourceRecord 中解析出它的操作类型（Operation）。它会去读取消息体中 op 字段的值。
     public static Operation operationFor(SourceRecord record) {
         Struct value = (Struct) record.value();
         Field opField = value.schema().field(FieldName.OPERATION);
